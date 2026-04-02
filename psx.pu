@@ -1,0 +1,139 @@
+@startuml PSX_MOD_CHIP_Activity
+title PSX MOD CHIP 処理フロー
+
+start
+
+:OSCCAL値を保存;
+note right: リセットベクタ(0x1FF)から\nキャリブレーション値をロード
+
+partition "初期化" {
+  :TMR0プリスケーラを1:8に設定;
+  :全ポートをハイインピーダンスに設定
+  TRIS = 11111111;
+  :モードフラグ(reg0E)を0にクリア;
+}
+
+partition "フェーズ1: GP1をLOWに (T≒50ms)" {
+  :sub_02: 50ms待ち|
+  :GP1出力ラッチ = 0 (BCF GPIO,1);
+  :GP1を出力に設定
+  TRIS = 11111101;
+  note right
+    GP1 = 出力LOW
+    GP2 = Hi-Z
+  end note
+}
+
+partition "フェーズ2: GP2をLOWに (T≒900ms)" {
+  :reg07 = 17;
+  repeat
+    :sub_02: 50ms待ち|
+    :reg07--;
+  repeat while (reg07 ≠ 0?) is (≠0)
+  ->0;
+  :GP2出力ラッチ = 0 (BCF GPIO,2);
+  :GP1,GP2を出力に設定
+  TRIS = 11111001;
+  note right
+    GP1 = 出力LOW
+    GP2 = 出力LOW
+  end note
+}
+
+partition "フェーズ3: 送信前ウエイト (T≒1214ms)" {
+  :reg07 = 6;
+  repeat
+    :sub_02: 50ms待ち|
+    :reg07--;
+  repeat while (reg07 ≠ 0?) is (≠0)
+  ->0;
+  :sub_03: 14ms待ち|
+  note right: retlw 3 → W=3
+}
+
+partition "フェーズ4: 送信ループ (無限)" {
+  repeat
+    :テーブルインデックス(reg0D) = 0;
+
+    partition "sub_12: データ送信 (W=3ブロック)" {
+      :ブロックカウンタ(reg07) = W;
+
+      repeat
+        :sub_03: 72ms待ち|
+        :バイトカウンタ(reg08) = 4;
+
+        repeat
+          partition "1バイト送信" {
+            :tbl_37: テーブルからデータ取得
+            tbl_37[reg0D] → reg0C|
+            :データをビット反転 (COMF);
+
+            :ビットカウンタ(reg09) = 8;
+
+            partition "スタートビット (4ms)" {
+              :TRIS = 11111011;
+              note right
+                GP1 = Hi-Z (HIGH)
+                GP2 = 出力LOW
+              end note
+              :sub_03: 4ms待ち|
+            }
+
+            repeat
+              partition "データビット送信 (4ms)" {
+                :reg0Cを右ローテート
+                LSB → Carry;
+                :GPIO = 11111001
+                GP1=0, GP2=0;
+
+                if (Carry?) then (C=1)
+                  :TRIS = 11111011;
+                  note right
+                    GP1 = Hi-Z (HIGH)
+                  end note
+                else (C=0)
+                  :TRIS = 11111001;
+                  note right
+                    GP1 = 出力LOW
+                  end note
+                endif
+
+                :sub_03: 4ms待ち|
+              }
+              :reg09--;
+            repeat while (reg09 ≠ 0?) is (≠0)
+            ->0;
+
+            partition "ストップビット (8ms)" {
+              :TRIS = 11111001;
+              note right
+                GP1 = 出力LOW
+                GP2 = 出力LOW
+              end note
+              :sub_03: 8ms待ち|
+            }
+
+            :テーブルインデックス(reg0D)++;
+          }
+          :reg08--;
+        repeat while (reg08 ≠ 0?) is (≠0)
+        ->0;
+
+        :reg07--;
+      repeat while (reg07 ≠ 0?) is (≠0)
+      ->0;
+    }
+
+    :モードフラグ(reg0E)++;
+    note right
+      bit0が交互に切り替わる
+      0: 4MHz基準タイミング
+      1: 4.45MHz補正タイミング
+    end note
+
+  repeat while (無限ループ)
+}
+
+stop
+
+@enduml
